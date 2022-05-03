@@ -1,32 +1,55 @@
 import base64
 from datetime import datetime, timezone
+import os
 import struct
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
+import mysql.connector
+
 
 EPOCH = datetime(2022, 5, 2, 0, 0, 0, tzinfo=timezone.utc)
 
 app = FastAPI()
-storage = []
+
+
+def get_db():
+    cnx = mysql.connector.connect(user=os.environ['MYSQL_USER'], password=os.environ['MYSQL_PASSWORD'],
+                                  host=os.environ['MYSQL_HOST'], database=os.environ['MYSQL_DATABASE'])
+    try:
+        yield cnx
+    finally:
+        cnx.close()
 
 
 @app.post("/generate/{brand}")
-async def generate(brand: str, number: int = 10):
+async def generate(brand: str, number: int = 10, db=Depends(get_db)):
+    if len(brand) > 20:
+        raise HTTPException(status_code=400, detail="Brand names longer than 20 characters are not supported.")
+
     if number > 128000:
         raise HTTPException(status_code=400, detail="Generating more than 128,000 codes at once is not supported.")
 
     codes = gen_codes(number)
-    storage.extend({"brand": brand, "code": code, "used": False} for code in codes)
+    with db.cursor() as cursor:
+        query = 'INSERT INTO codes (brand, code) VALUES (%s, %s)'
+        cursor.executemany(query, [(brand, code) for code in codes])
+        db.commit()
     return {"result": codes}
 
 
 @app.post("/fetch/{brand}")
-async def fetch(brand: str):
-    for row in storage:
-        if row["brand"] == brand and not row["used"]:
-            row["used"] = True
-            return {"result": row["code"]}
-    raise HTTPException(status_code=404)
+async def fetch(brand: str, db=Depends(get_db)):
+    with db.cursor() as cursor:
+        query = 'SELECT code FROM codes WHERE brand = %s AND used = FALSE LIMIT 1 FOR UPDATE SKIP LOCKED'
+        cursor.execute(query, (brand,))
+        row = cursor.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404)
+        code = row[0]
+        query = 'UPDATE codes SET used = TRUE WHERE brand = %s AND code = %s'
+        cursor.execute(query, (brand, code))
+        db.commit()
+    return {"result": code}
 
 
 def gen_codes(N):
