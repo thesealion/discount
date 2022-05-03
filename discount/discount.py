@@ -29,6 +29,7 @@ async def generate(brand: str, number: int = 10, db=Depends(get_db)):
     if number > 128000:
         raise HTTPException(status_code=400, detail="Generating more than 128,000 codes at once is not supported.")
 
+    # TODO: use a distributed lock to lock code generation for the current brand
     codes = gen_codes(number)
     with db.cursor() as cursor:
         query = 'INSERT INTO codes (brand, code) VALUES (%s, %s)'
@@ -71,4 +72,5 @@ def gen_codes(N):
             codes.append(base64.b32encode(data).decode().strip('='))
             N -= 1
         ts += 1
+    # TODO: sleep until all the milliseconds we used have elapsed
     return codes
